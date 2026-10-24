@@ -21,6 +21,9 @@ _start:
     li    sp, 0x00010400          # pila en la RAM, lejos de la zona de prueba
     li    s0, RAM_TEST            # s0 = dirección base de las pruebas
     li    s3, 0                   # s3 = número de prueba
+    li    s1, 0                   # s1, s2 y t1 se guardan en la pila en las subrutinas
+    li    s2, 0                   # (putchar guarda t1); sin valor inicial salen como X
+    li    t1, 0                   # (rojo) en la simulación
 
     # ---- T1: sw / lw ---------------------------------------------------
     li    t0, 0x44332211

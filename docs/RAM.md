@@ -58,6 +58,10 @@ CPU, el bus SPI hacia el chip, el contenido del chip en las direcciones
 | T11–T12 | dos `sw` seguidos en 0x104 y 0x108 | `0x12345678`, `0x9ABCDEF0` |
 | T13 | `lw` de 0x100 otra vez | `0xBEEFAA11` (no se dañó) |
 
+Al inicio, el programa pone `s1`, `s2` y `t1` en 0. Las subrutinas los guardan
+en la pila y, sin valor inicial, viajarían por el bus como X (rojo en GTKWave)
+aunque nunca se usen.
+
 Contenido final esperado en el chip, byte por dirección:
 
 ```
@@ -68,7 +72,7 @@ Contenido final esperado en el chip, byte por dirección:
 
 | | Terminal | Contenido final del chip (0x100–0x10B) |
 |---|---|---|
-| Original | `T1` y se detiene | `FF FF FF FF FF FF FF FF FF FF FF FF` (nunca se escribió nada) |
+| Original | `T1` y el programa se pierde (vuelve a empezar y repite `T1`) | `44 33 22 11 FF FF FF FF FF FF FF FF`: solo quedó la primera escritura, y con los bytes al revés (R4) |
 | Nuevo | `T1 OK` … `T13 OK`, `FIN` | `11 AA EF BE 78 56 34 12 F0 DE BC 9A` |
 
 ![Contenido del chip durante la prueba con la RAM nueva](img/ram_contenido_80ms.png)
@@ -77,7 +81,7 @@ Contenido final esperado en el chip, byte por dirección:
 cambiar en el momento de su escritura: `mem[257]` pasa a `AA` con el `sb`
 (~16,7 ms), `mem[258..259]` a `EF BE` con el `sh` (~20,1 ms) y 0x104–0x10B
 con los dos `sw` seguidos (~33,9 ms). La primera escritura (0x100–0x103) empieza
-a los 62,7 µs y a esta escala queda pegada al borde izquierdo.*
+a los 86 µs y a esta escala queda pegada al borde izquierdo.*
 
 ## Qué ve el chip en el bus
 
@@ -87,32 +91,37 @@ muestreando MOSI en cada flanco de subida de SCK con `CS_N` en bajo (SPI modo
 
 ![Comparación de la misma escritura](img/sw_comparacion.png)
 
-**Original.** El CPU pide escribir `0x44332211` en `0x10100`, o sea la trama
-`02 00 01 00 44 33 22 11`. El chip recibe `04 00 02 00 88 66 44 23`: la misma
-trama **corrida un bit hacia la izquierda**. El comando que interpreta es
-`0x04` = **WRDI** (deshabilitar escritura), así que no guarda nada. También se
+**Original.** El CPU escribe `0x44332211` en `0x10100` y luego lo lee. La
+escritura llega alineada, `02 00 01 00 44 33 22 11`, pero con los datos al
+revés: el chip guarda `44` en 0x100 y `11` en 0x103 (big-endian, R4). La
+lectura que viene justo después llega **corrida un bit hacia la izquierda**:
+`03 00 01 00` se convierte en `06 00 02 00`, y el chip interpreta `0x06`
+(WREN) en lugar de READ. No devuelve nada y el CPU lee `00000000`. También se
 ve que SCK sigue corriendo con `CS_N` en alto.
 
 **Nuevo.** Primero va `06` (WREN) con su propio pulso de `CS_N`, y luego
 `02 00 01 00 11 22 33 44`. Los datos salen en orden de dirección: el byte de la
-dirección A (`11`, el bajo de la palabra) va primero.
+dirección A (`11`, el bajo de la palabra) va primero. La lectura sale alineada,
+`03 00 01 00`, y devuelve `44332211`.
 
 Primeras tramas de cada versión:
 
 ```
-ORIGINAL                                         NUEVO
-62.7 us  04 00 02 00 88 66 44 23  (sw, corrida)  62.7 us  06                        (WREN)
-98.8 us  06 00 02 00 ...          (lw, corrida)  66.4 us  02 00 01 00 11 22 33 44   (sw)
-173.4 us 04 00 07 F0 ...          (sw, corrida)  102.4 us 03 00 01 00 ...           (lw)
-209.7 us 02 00 03 FC 00 00 00 00  (sw, alineada)
+ORIGINAL                                          NUEVO
+ 86.1 us  02 00 01 00 44 33 22 11 (sw, alineada)   86.1 us  06                       (WREN)
+122.5 us  06 00 02 00 ...         (lw, corrida)    89.8 us  02 00 01 00 11 22 33 44  (sw)
+197.2 us  04 00 07 F0 ...         (sw, corrida)   125.8 us  03 00 01 00 ...          (lw)
+233.4 us  02 00 03 FC 00 00 00 00 (sw, alineada)
+309.0 us  04 00 07 D8 88 66 44 23 (sw, corrida)
 ```
 
-En toda la prueba original salen 20 tramas antes de que el programa se pierda,
-y **10 llegan con el comando equivocado**: `0x04` (WRDI) en lugar de WRITE y
-`0x06` (WREN) en lugar de READ. Que salga bien o mal depende de en qué fase del
-SCK libre baje `CS_N`, así que el resultado cambia con el tiempo exacto de cada
-acceso. Esto explica por qué en hardware los programas con RAM funcionaban de
-forma intermitente.
+Que una trama llegue bien o mal depende de en qué fase del SCK libre baje
+`CS_N`, así que cambia con el tiempo exacto de cada acceso: dos accesos
+seguidos pueden salir uno bien y otro mal. En los 80 ms de la prueba original
+salen 1208 tramas y **573 llegan con el comando equivocado**: `0x04` (WRDI,
+deshabilitar escritura) en lugar de WRITE y `0x06` (WREN) en lugar de READ.
+Esto explica por qué en hardware los programas con RAM funcionaban de forma
+intermitente.
 
 ### Escritura de un byte (`sb`) con la RAM nueva
 
@@ -191,7 +200,9 @@ bytes de dato.
 **Original:** `assign rdata = rcv_data;`. El primer byte recibido (dirección
 A) queda en los bits 31:24, al revés que en la flash y que lo que espera el
 CPU. Con `lw`/`sw` se nota poco porque el error se cancela, pero `lb`/`lbu`
-leen el byte equivocado.
+leen el byte equivocado. En la prueba original, la única escritura que llega
+alineada (`sw 0x44332211`) deja en el chip `44 33 22 11` a partir de 0x100,
+y debería ser `11 22 33 44`.
 
 **Nuevo:** igual que la flash. El byte de la dirección A va en los bits 7:0,
 tanto al leer como al escribir:
@@ -261,24 +272,25 @@ Abre la versión nueva (`make test_ram_hex`) y busca:
 
 | Cursor en | Grupo | Qué se ve |
 |---|---|---|
-| 0–150 µs | contenido del chip | `mem[256..259]` pasan de `FF` a `11 22 33 44` entre 83,8 y 94,4 µs (un byte por cada 8 flancos de SCK) |
-| 62–100 µs | bus SPI | el pulso corto de `CS_N` (WREN) y la trama larga del `sw` |
-| ~16 713 µs | lo que pide el CPU | `wr`, `wmask = 0010`, `address = 0101` (el `sb`) |
-| ~16 713 µs | bus SPI | WREN y luego una trama de solo 40 bits (`02 00 01 01 AA`) |
-| 16 734,4 µs | contenido del chip | `mem[257]` pasa de `22` a `AA`; los vecinos no cambian |
-| ~33 886 µs | bus SPI | dos escrituras seguidas, cada una con su WREN |
+| 0–150 µs | contenido del chip | `mem[256..259]` pasan de `FF` a `11 22 33 44` entre 107,2 y 117,8 µs (un byte por cada 8 flancos de SCK) |
+| 86–160 µs | bus SPI | el pulso corto de `CS_N` (WREN), la trama larga del `sw` y la lectura |
+| 16 736,7 µs | lo que pide el CPU | `wr`, `wmask = 0010`, `address = 0101` (el `sb`) |
+| 16 737–16 758 µs | bus SPI | WREN y luego una trama de solo 40 bits (`02 00 01 01 AA`) |
+| 16 757,8 µs | contenido del chip | `mem[257]` pasa de `22` a `AA`; los vecinos no cambian |
+| ~33 910 µs | bus SPI | dos escrituras seguidas, cada una con su WREN |
 
-En la versión original (`make test_ram_original`), en los mismos 62–100 µs se
-ve SCK corriendo con `CS_N` en alto, y `mem[256..259]` se quedan en `FF`.
+En la versión original (`make test_ram_original`), en los mismos 86–160 µs se
+ve SCK corriendo con `CS_N` en alto; `mem[256..259]` quedan en `44 33 22 11`
+(al revés) y la lectura siguiente sale corrida.
 
 Los tiempos exactos de cada acceso están en `ram_log.txt`:
 
 ```
 # tiempo_us  op  direccion   dato      (mask: bytes escritos)
-  16713.3  WR  00010101 <- aa00aaaa  mask 0010   ← sb: solo se escribe el byte 1
-  16770.5  RD  00010100 -> 4433aa11              ← el resto de la palabra no cambió
-  20085.0  WR  00010102 <- beefbeef  mask 1100   ← sh: media palabra alta
-  20145.7  RD  00010100 -> beefaa11
+  16736.7  WR  00010101 <- aa00aaaa  mask 0010   ← sb: solo se escribe el byte 1
+  16793.9  RD  00010100 -> 4433aa11              ← el resto de la palabra no cambió
+  20108.4  WR  00010102 <- beefbeef  mask 1100   ← sh: media palabra alta
+  20169.1  RD  00010100 -> beefaa11
 ```
 
 En `aa00aaaa` el CPU repite el byte en todos los carriles; `mask 0010` le dice
