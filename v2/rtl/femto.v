@@ -1,5 +1,12 @@
 /* verilator lint_off SYNCASYNCNET */
 module tt_um_femto(
+`ifdef USE_POWER_PINS
+    // v2: solo al sintetizar (make synth). Así la netlist tiene los mismos
+    // puertos que la del chip (tt_um_femto.v del curso) y el testbench la
+    // conecta igual. En la simulación RTL no se definen.
+    inout  wire       VPWR,
+    inout  wire       VGND,
+`endif
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
     input  wire [7:0] uio_in,   // IOs: Input path

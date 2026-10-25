@@ -14,3 +14,5 @@ build/
 ram_log.txt
 femto_ram_original.v
 ram_log_original.txt
+*.vpp
+synth.log

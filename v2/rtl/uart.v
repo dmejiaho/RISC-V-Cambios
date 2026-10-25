@@ -72,6 +72,7 @@ begin
 		rx_avail    <= 0;
 		rx_error    <= 0;
 		rxd_reg     <= 0;
+		rx_data     <= 0;      // v2: reset (antes arrancaba en X)
 	end else begin 
 		if (rx_ack) begin
 			rx_avail <= 0;
@@ -127,6 +128,8 @@ begin
 		tx_busy     <= 0;
 		uart_txd    <= 1;
 		tx_count16  <= 0;
+		tx_bitcount <= 0;      // v2: sin reset arrancaban en X y en la
+		txd_reg     <= 0;      // simulación con compuertas TXD quedaba en X
 	end else begin
 		if (tx_wr && !tx_busy) begin
 			txd_reg     <= tx_data;
